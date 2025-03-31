@@ -33,7 +33,7 @@ except Exception as e:
     desire_priority=20,
     hidden=False,
     desc="Sum url link content with newspaper3k and llm",
-    version="2.4",
+    version="2.4.1",
     author="BenedictKing",
 )
 class JinaSum(Plugin):
@@ -65,7 +65,7 @@ class JinaSum(Plugin):
         ],
         "black_group_list": [],
         "auto_sum": True,
-        "cache_timeout": 300,  # 缓存超时时间（5分钟）
+        "cache_timeout": 900,  # 缓存超时时间（15分钟）
         "openai_api_base": "https://api.openai.com/v1",
         "openai_api_key": "",
         "openai_model": "gpt-4o-2024-08-06",
@@ -104,6 +104,7 @@ class JinaSum(Plugin):
 
             # 消息缓存
             self.pending_messages = {}  # 用于存储待处理的消息，格式: {chat_id: {"content": content, "timestamp": time.time()}}
+            self.content_cache = {}  # 用于存储已处理的内容缓存，格式: {url: {"content": content, "timestamp": time.time()}}
 
             logger.info("[JinaSum] 初始化完成")
             self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
@@ -495,6 +496,15 @@ class JinaSum(Plugin):
             str: 文章内容,失败返回None
         """
         try:
+            # 检查缓存是否存在且未过期
+            if url in self.content_cache:
+                cached_data = self.content_cache[url]
+                if time.time() - cached_data["timestamp"] <= self.cache_timeout:
+                    logger.debug(f"[JinaSum] 使用缓存内容，URL: {url}")
+                    return cached_data["content"]
+                else:
+                    del self.content_cache[url]
+
             # 处理B站短链接
             if "b23.tv" in url:
                 url = self._resolve_b23_short_url(url)
@@ -1343,6 +1353,8 @@ class JinaSum(Plugin):
 
             # 清洗内容
             target_url_content = self._clean_content(target_url_content)
+            # 将清洗后的内容存入缓存
+            self.content_cache[target_url] = {"content": target_url_content, "timestamp": time.time()}
 
             # 限制内容长度
             target_url_content = target_url_content[: self.max_words]
@@ -1503,7 +1515,7 @@ class JinaSum(Plugin):
                     recent_timestamp = cache_data["timestamp"]
                     recent_content = cache_data["content"]
 
-            if not recent_content or time.time() - recent_timestamp > self.content_cache_timeout:
+            if not recent_content or time.time() - recent_timestamp > self.cache_timeout:
                 logger.debug("[JinaSum] No valid content cache found or content expired")
                 return  # 找不到相关文章，让后续插件处理问题
 
@@ -1526,6 +1538,7 @@ class JinaSum(Plugin):
             response.raise_for_status()
             answer = response.json()["choices"][0]["message"]["content"]
 
+            answer = remove_markdown_symbol(answer)
             reply = Reply(ReplyType.TEXT, answer)
             e_context["reply"] = reply
             e_context.action = EventAction.BREAK_PASS
@@ -1563,17 +1576,6 @@ class JinaSum(Plugin):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.openai_api_key}",  # 直接使用实例变量
         }
-
-    def _get_openai_payload(self, target_url_content):
-        """构造openai的payload（添加max_tokens限制）"""
-        sum_prompt = f"{self.prompt}\n\n'''{target_url_content}'''"
-        messages = [{"role": "user", "content": sum_prompt}]
-        payload = {
-            "model": self.openai_model,  # 统一使用配置参数
-            "messages": messages,
-            "max_tokens": self.max_words,  # 添加token限制
-        }
-        return payload
 
     def _check_url(self, target_url: str):
         """增强URL检查"""
